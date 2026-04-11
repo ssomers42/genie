@@ -287,7 +287,7 @@ body {
 
 .header {
   display: grid;
-  grid-template-columns: minmax(100px, auto) 1fr minmax(100px, auto);
+  grid-template-columns: auto 1fr auto;
   align-items: center;
   padding: 12px 8px 8px;
   padding-top: max(12px, env(safe-area-inset-top));
@@ -297,7 +297,7 @@ body {
   margin: 0;
   font-size: 1.0625rem;
   font-weight: 600;
-  text-align: start;
+  text-align: left;
 }
 
 .icon-btn {
