@@ -1,15 +1,17 @@
+import { createClient } from '@supabase/supabase-js'
 import './style.css'
 
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+)
+
 const PROXIES = [
-  (target) =>
-    'https://api.allorigins.win/get?url=' + encodeURIComponent(target),
-  (target) => 'https://corsproxy.io/?' + encodeURIComponent(target),
+  (target) => '/api/proxy?url=' + encodeURIComponent(target),
 ]
 
-const STORAGE_KEY = 'wishlist-app-v1'
-
 const state = {
-  view: 'wishlist',
+  view: 'loading',
   wishlistLayout: 'grid',
   url: '',
   itemName: '',
@@ -22,58 +24,69 @@ const state = {
   newGroupName: '',
 }
 
-function loadStore() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { groups: [], ungrouped: [] }
-    const data = JSON.parse(raw)
-    const groups = Array.isArray(data.groups) ? data.groups : []
-    return {
-      groups: groups.map((g) => ({
-        ...g,
-        items: Array.isArray(g.items) ? g.items : [],
-      })),
-      ungrouped: Array.isArray(data.ungrouped) ? data.ungrouped : [],
-    }
-  } catch {
-    return { groups: [], ungrouped: [] }
+// In-memory store — kept in sync with Supabase
+let store = { groups: [], ungrouped: [] }
+
+function toItem(row) {
+  return {
+    id: row.id,
+    url: row.url,
+    imageSrc: row.image_src,
+    name: row.name,
+    addedAt: row.added_at,
   }
 }
 
-function saveStore(store) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(store))
+async function fetchStore() {
+  const [{ data: groups, error: ge }, { data: items, error: ie }] =
+    await Promise.all([
+      supabase.from('groups').select('*').order('created_at'),
+      supabase.from('items').select('*').order('added_at'),
+    ])
+  if (ge) throw ge
+  if (ie) throw ie
+
+  store.groups = (groups || []).map((g) => ({
+    id: g.id,
+    name: g.name,
+    items: (items || []).filter((i) => i.group_id === g.id).map(toItem),
+  }))
+  store.ungrouped = (items || []).filter((i) => !i.group_id).map(toItem)
 }
 
-function addGroup(name) {
-  const store = loadStore()
-  const id = crypto.randomUUID()
-  store.groups.push({
-    id,
-    name: name.trim(),
-    items: [],
-  })
-  saveStore(store)
-  return id
+async function addGroup(name) {
+  const { data, error } = await supabase
+    .from('groups')
+    .insert({ name: name.trim() })
+    .select()
+    .single()
+  if (error) throw error
+  store.groups.push({ id: data.id, name: data.name, items: [] })
+  return data.id
 }
 
-function saveWishlistItem(groupId) {
-  const store = loadStore()
+async function saveWishlistItem(groupId) {
   const idx = state.selectedIndex
   if (idx === null || !state.images[idx]) return
-  const item = {
-    id: crypto.randomUUID(),
-    url: state.url,
-    imageSrc: state.images[idx].src,
-    name: state.itemName.trim() || null,
-    addedAt: Date.now(),
-  }
+  const { data, error } = await supabase
+    .from('items')
+    .insert({
+      group_id: groupId,
+      url: state.url,
+      image_src: state.images[idx].src,
+      name: state.itemName.trim() || null,
+      added_at: Date.now(),
+    })
+    .select()
+    .single()
+  if (error) throw error
+  const item = toItem(data)
   if (groupId === null) {
     store.ungrouped.push(item)
   } else {
     const g = store.groups.find((x) => x.id === groupId)
     if (g) g.items.push(item)
   }
-  saveStore(store)
 }
 
 function resetFlow() {
@@ -90,7 +103,6 @@ function resetFlow() {
 }
 
 function getAllWishlistItems() {
-  const store = loadStore()
   const items = []
   for (const it of store.ungrouped) {
     items.push({ ...it, groupName: null })
@@ -277,7 +289,9 @@ async function loadImagesForUrl(urlString) {
     const pageUrl = new URL(urlString)
     const html = await fetchPageHtml(pageUrl.href)
     const urls = collectImageUrls(html, pageUrl.href)
-    state.images = urls.length ? urls.map((src) => ({ src, placeholder: false })) : placeholderImages()
+    state.images = urls.length
+      ? urls.map((src) => ({ src, placeholder: false }))
+      : placeholderImages()
     if (!urls.length) {
       state.error =
         'No images found on this page. Showing placeholders — try another product URL.'
@@ -293,6 +307,8 @@ async function loadImagesForUrl(urlString) {
     render()
   }
 }
+
+// ── Icons ────────────────────────────────────────────────────────────────────
 
 function closeIcon() {
   return `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>`
@@ -312,6 +328,16 @@ function gridViewIcon() {
 
 function listViewIcon() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1.5" fill="currentColor"/><circle cx="4" cy="12" r="1.5" fill="currentColor"/><circle cx="4" cy="18" r="1.5" fill="currentColor"/></svg>`
+}
+
+// ── Render ───────────────────────────────────────────────────────────────────
+
+function renderLoading() {
+  return `
+    <div class="screen" style="align-items:center;justify-content:center;">
+      <div class="spinner" aria-hidden="true"></div>
+    </div>
+  `
 }
 
 function renderWishlist() {
@@ -467,7 +493,6 @@ function renderSelect() {
 }
 
 function renderGroup() {
-  const store = loadStore()
   const canContinue = Boolean(state.selectedGroupId)
   const groupRows = store.groups
     .map((g) => {
@@ -569,6 +594,9 @@ function escapeHtml(s) {
 function render() {
   const root = document.querySelector('#app')
   switch (state.view) {
+    case 'loading':
+      root.innerHTML = renderLoading()
+      break
     case 'wishlist':
       root.innerHTML = renderWishlist()
       break
@@ -676,12 +704,14 @@ function bind() {
       render()
     })
 
-    document.querySelector('#btn-continue-select')?.addEventListener('click', () => {
-      if (state.selectedIndex === null) return
-      state.selectedGroupId = null
-      state.view = 'group'
-      render()
-    })
+    document
+      .querySelector('#btn-continue-select')
+      ?.addEventListener('click', () => {
+        if (state.selectedIndex === null) return
+        state.selectedGroupId = null
+        state.view = 'group'
+        render()
+      })
     return
   }
 
@@ -693,29 +723,37 @@ function bind() {
       })
     })
 
-    document.querySelector('#btn-goto-create-group')?.addEventListener('click', () => {
-      state.newGroupName = ''
-      state.view = 'createGroup'
-      render()
-    })
+    document
+      .querySelector('#btn-goto-create-group')
+      ?.addEventListener('click', () => {
+        state.newGroupName = ''
+        state.view = 'createGroup'
+        render()
+      })
 
-    document.querySelector('#btn-close-group')?.addEventListener('click', () => {
-      resetFlow()
-      render()
-    })
+    document
+      .querySelector('#btn-close-group')
+      ?.addEventListener('click', () => {
+        resetFlow()
+        render()
+      })
 
-    document.querySelector('#btn-continue-group')?.addEventListener('click', () => {
-      if (!state.selectedGroupId) return
-      saveWishlistItem(state.selectedGroupId)
-      resetFlow()
-      render()
-    })
+    document
+      .querySelector('#btn-continue-group')
+      ?.addEventListener('click', async () => {
+        if (!state.selectedGroupId) return
+        await saveWishlistItem(state.selectedGroupId)
+        resetFlow()
+        render()
+      })
 
-    document.querySelector('#btn-skip-group')?.addEventListener('click', () => {
-      saveWishlistItem(null)
-      resetFlow()
-      render()
-    })
+    document
+      .querySelector('#btn-skip-group')
+      ?.addEventListener('click', async () => {
+        await saveWishlistItem(null)
+        resetFlow()
+        render()
+      })
     return
   }
 
@@ -728,22 +766,35 @@ function bind() {
       btnSubmit.disabled = !state.newGroupName.trim()
     })
 
-    document.querySelector('#btn-back-create-group')?.addEventListener('click', () => {
-      state.newGroupName = ''
-      state.view = 'group'
-      render()
-    })
+    document
+      .querySelector('#btn-back-create-group')
+      ?.addEventListener('click', () => {
+        state.newGroupName = ''
+        state.view = 'group'
+        render()
+      })
 
-    document.querySelector('#btn-submit-create-group')?.addEventListener('click', () => {
-      const name = state.newGroupName.trim()
-      if (!name) return
-      const id = addGroup(name)
-      state.newGroupName = ''
-      state.selectedGroupId = id
-      state.view = 'group'
-      render()
-    })
+    document
+      .querySelector('#btn-submit-create-group')
+      ?.addEventListener('click', async () => {
+        const name = state.newGroupName.trim()
+        if (!name) return
+        const id = await addGroup(name)
+        state.newGroupName = ''
+        state.selectedGroupId = id
+        state.view = 'group'
+        render()
+      })
   }
 }
 
-render()
+// ── Boot ─────────────────────────────────────────────────────────────────────
+
+async function init() {
+  render() // show loading spinner
+  await fetchStore()
+  state.view = 'wishlist'
+  render()
+}
+
+init()
