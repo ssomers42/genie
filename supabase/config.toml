@@ -1,0 +1,8 @@
+# For detailed configuration reference documentation:
+# https://supabase.com/docs/guides/local-development/cli/config
+
+[api]
+enabled = true
+
+[functions.product-preview]
+verify_jwt = false
