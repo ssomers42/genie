@@ -1,0 +1,19 @@
+diff --git a/node_modules/react-native/React/CoreModules/RCTActionSheetManager.mm b/node_modules/react-native/React/CoreModules/RCTActionSheetManager.mm
+index 658ec6b..a045a6f 100644
+--- a/node_modules/react-native/React/CoreModules/RCTActionSheetManager.mm
++++ b/node_modules/react-native/React/CoreModules/RCTActionSheetManager.mm
+@@ -58,8 +58,12 @@ - (void)presentViewController:(UIViewController *)alertController
+   } else {
+     alertController.popoverPresentationController.permittedArrowDirections = 0;
+   }
+-  alertController.popoverPresentationController.sourceView = sourceView;
+-  alertController.popoverPresentationController.sourceRect = sourceView.bounds;
++  // iPad needs an anchor rect for popovers. On iPhone, setting sourceView/sourceRect
++  // breaks UIAlertControllerStyleActionSheet (e.g. centered card on iOS 26+).
++  if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
++    alertController.popoverPresentationController.sourceView = sourceView;
++    alertController.popoverPresentationController.sourceRect = sourceView.bounds;
++  }
+   [parentViewController presentViewController:alertController animated:YES completion:nil];
+ }
+ 
