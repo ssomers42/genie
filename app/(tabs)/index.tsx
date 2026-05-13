@@ -1,9 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionSheetIOS,
   ActivityIndicator,
+  Alert,
+  Dimensions,
+  findNodeHandle,
   FlatList,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -12,18 +17,26 @@ import {
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EmojiCardSurface } from "@/components/EmojiCardSurface";
+import { WishlistSwipeRow } from "@/features/wishlist/components/WishlistSwipeRow";
 import { useWishlist } from "@/features/wishlist/hooks/useWishlist";
 import { useListUiStore } from "@/features/wishlist/stores/listUiStore";
 import { tryParseGenieEmojiCard } from "@/lib/emojiCard";
 import {
   wishlistGridCardStyles,
-  WISHLIST_ROW_THUMB,
 } from "@/lib/wishlistImageStyles";
 import {
   getAllWishlistItems,
   getWishlistItemsForFilter,
 } from "@/lib/wishlistFilters";
 import type { WishlistItemWithGroup } from "@/types";
+
+type WishlistUndoSnapshot = {
+  groupId: string | null;
+  url: string;
+  imageSrc: string;
+  name: string | null;
+  addedAt: number;
+};
 
 function hostFromUrl(url: string): string {
   try {
@@ -33,9 +46,148 @@ function hostFromUrl(url: string): string {
   }
 }
 
+function isLikelyIPadLayout(): boolean {
+  const { width, height } = Dimensions.get("window");
+  return Math.min(width, height) >= 768;
+}
+
+function WishlistGridTile({
+  item,
+  onOpenRemoveMenu,
+}: {
+  item: WishlistItemWithGroup;
+  onOpenRemoveMenu: (item: WishlistItemWithGroup, anchor?: number) => void;
+}) {
+  const anchorRef = useRef<View>(null);
+  const uri = item.imageSrc;
+  const emojiCard = tryParseGenieEmojiCard(uri);
+  return (
+    <Pressable
+      onPress={() => void Linking.openURL(item.url)}
+      onLongPress={() => {
+        let anchor: number | undefined;
+        if (
+          Platform.OS === "ios" &&
+          isLikelyIPadLayout() &&
+          anchorRef.current
+        ) {
+          const tag = findNodeHandle(anchorRef.current);
+          if (typeof tag === "number") anchor = tag;
+        }
+        onOpenRemoveMenu(item, anchor);
+      }}
+      delayLongPress={420}
+      accessibilityHint="Opens link. Long press to remove from wishlist."
+      className="w-[50%] p-1"
+    >
+      <View ref={anchorRef} collapsable={false} style={wishlistGridCardStyles.wrap}>
+        {emojiCard ? (
+          <EmojiCardSurface
+            emoji={emojiCard.emoji}
+            bg={emojiCard.bg}
+            emojiSize={88}
+          />
+        ) : (
+          <Image
+            source={{ uri }}
+            style={wishlistGridCardStyles.imageFill}
+            contentFit="cover"
+          />
+        )}
+      </View>
+    </Pressable>
+  );
+}
+
 export default function WishlistScreen() {
   const insets = useSafeAreaInsets();
-  const { store, loading, error } = useWishlist();
+  const { store, loading, error, removeItem, restoreItem } = useWishlist();
+  const [undoSnack, setUndoSnack] = useState<WishlistUndoSnapshot | null>(null);
+  const snackHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSnackTimer = useCallback(() => {
+    if (snackHideTimer.current !== null) {
+      clearTimeout(snackHideTimer.current);
+      snackHideTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearSnackTimer(), [clearSnackTimer]);
+
+  const scheduleHideSnack = useCallback(() => {
+    clearSnackTimer();
+    snackHideTimer.current = setTimeout(() => setUndoSnack(null), 5200);
+  }, [clearSnackTimer]);
+
+  const handleListItemRemoved = useCallback(
+    async (item: WishlistItemWithGroup) => {
+      const snapshot: WishlistUndoSnapshot = {
+        groupId: item.groupId,
+        url: item.url,
+        imageSrc: item.imageSrc,
+        name: item.name,
+        addedAt: item.addedAt,
+      };
+      try {
+        await removeItem(item.id);
+        setUndoSnack(snapshot);
+        scheduleHideSnack();
+      } catch (e) {
+        Alert.alert(
+          "Couldn't remove",
+          e instanceof Error ? e.message : "Please try again.",
+        );
+      }
+    },
+    [removeItem, scheduleHideSnack],
+  );
+
+  const handleUndoRemove = useCallback(async () => {
+    if (!undoSnack) return;
+    clearSnackTimer();
+    const snap = undoSnack;
+    try {
+      await restoreItem(snap);
+      setUndoSnack(null);
+    } catch (e) {
+      Alert.alert(
+        "Couldn't undo",
+        e instanceof Error ? e.message : "Please try again.",
+      );
+      scheduleHideSnack();
+    }
+  }, [undoSnack, restoreItem, clearSnackTimer, scheduleHideSnack]);
+
+  const openGridItemMenu = useCallback(
+    (item: WishlistItemWithGroup, anchor?: number) => {
+      const title = item.name?.trim() || hostFromUrl(item.url);
+      if (Platform.OS === "ios") {
+        ActionSheetIOS.showActionSheetWithOptions(
+          {
+            title,
+            options: ["Cancel", "Remove from wishlist"],
+            cancelButtonIndex: 0,
+            destructiveButtonIndex: 1,
+            ...(typeof anchor === "number" ? { anchor } : {}),
+          },
+          (i) => {
+            if (i === 1) void handleListItemRemoved(item);
+          },
+        );
+        return;
+      }
+      Alert.alert(title, undefined, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove from wishlist",
+          style: "destructive",
+          onPress: () => void handleListItemRemoved(item),
+        },
+      ]);
+    },
+    [handleListItemRemoved],
+  );
+
   const wishlistGroupFilter = useListUiStore((s) => s.wishlistGroupFilter);
   const setWishlistGroupFilter = useListUiStore((s) => s.setWishlistGroupFilter);
   const wishlistLayout = useListUiStore((s) => s.wishlistLayout);
@@ -71,69 +223,16 @@ export default function WishlistScreen() {
 
   const renderItem = ({ item }: { item: WishlistItemWithGroup }) => {
     if (wishlistLayout === "grid") {
-      const uri = item.imageSrc;
-      const emojiCard = tryParseGenieEmojiCard(uri);
       return (
-        <Pressable
-          onPress={() => void Linking.openURL(item.url)}
-          className="w-[50%] p-1"
-        >
-          <View style={wishlistGridCardStyles.wrap}>
-            {emojiCard ? (
-              <EmojiCardSurface
-                emoji={emojiCard.emoji}
-                bg={emojiCard.bg}
-                emojiSize={88}
-              />
-            ) : (
-              <Image
-                source={{ uri }}
-                style={wishlistGridCardStyles.imageFill}
-                contentFit="cover"
-              />
-            )}
-          </View>
-        </Pressable>
+        <WishlistGridTile item={item} onOpenRemoveMenu={openGridItemMenu} />
       );
     }
-    const rowEmoji = tryParseGenieEmojiCard(item.imageSrc);
     return (
-      <Pressable
-        onPress={() => void Linking.openURL(item.url)}
-        className="w-full border-b border-border flex-row items-center gap-3 px-4 py-3"
-      >
-        {rowEmoji ? (
-          <View style={[WISHLIST_ROW_THUMB, { overflow: "hidden" }]}>
-            <EmojiCardSurface
-              emoji={rowEmoji.emoji}
-              bg={rowEmoji.bg}
-              emojiSize={28}
-            />
-          </View>
-        ) : (
-          <Image
-            source={{ uri: item.imageSrc }}
-            style={WISHLIST_ROW_THUMB}
-            contentFit="cover"
-          />
-        )}
-        <View className="min-w-0 flex-1">
-          {item.name ? (
-            <Text className="font-sans-medium text-foreground" numberOfLines={2}>
-              {item.name}
-            </Text>
-          ) : null}
-          <Text
-            className={`text-sm ${item.name ? "text-muted" : "text-foreground"}`}
-            numberOfLines={1}
-          >
-            {hostFromUrl(item.url)}
-          </Text>
-          {item.groupName ? (
-            <Text className="text-muted mt-0.5 text-xs">{item.groupName}</Text>
-          ) : null}
-        </View>
-      </Pressable>
+      <WishlistSwipeRow
+        item={item}
+        hostLabel={hostFromUrl(item.url)}
+        onDelete={handleListItemRemoved}
+      />
     );
   };
 
@@ -160,32 +259,22 @@ export default function WishlistScreen() {
         <Text className="font-sans-bold leading-none text-2xl text-foreground">
           My wishlist
         </Text>
-        <View className="flex-row items-center gap-2">
-          <Pressable
-            onPress={() => setWishlistLayout("grid")}
-            accessibilityLabel="Grid view"
-            className="h-10 w-10 items-center justify-center"
-            hitSlop={6}
-          >
-            <Ionicons
-              name="grid-outline"
-              size={22}
-              color={wishlistLayout === "grid" ? "#000000" : "#8e8e93"}
-            />
-          </Pressable>
-          <Pressable
-            onPress={() => setWishlistLayout("list")}
-            accessibilityLabel="List view"
-            className="h-10 w-10 items-center justify-center"
-            hitSlop={6}
-          >
-            <Ionicons
-              name="list-outline"
-              size={22}
-              color={wishlistLayout === "list" ? "#000000" : "#8e8e93"}
-            />
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() =>
+            setWishlistLayout(wishlistLayout === "grid" ? "list" : "grid")
+          }
+          accessibilityLabel={
+            wishlistLayout === "grid" ? "Switch to list view" : "Switch to grid view"
+          }
+          className="h-10 w-10 items-center justify-center"
+          hitSlop={6}
+        >
+          <Ionicons
+            name={wishlistLayout === "grid" ? "list-outline" : "grid-outline"}
+            size={22}
+            color="#000000"
+          />
+        </Pressable>
       </View>
 
       {store.groups.length > 0 ? (
@@ -270,6 +359,26 @@ export default function WishlistScreen() {
           renderItem={renderItem}
         />
       )}
+
+      {undoSnack !== null ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: "absolute",
+            left: 16,
+            right: 16,
+            bottom: Math.max(insets.bottom, 8) + 72,
+          }}
+          className="flex-row items-center rounded-xl bg-foreground px-4 py-3.5 shadow-lg"
+        >
+          <Text className="font-sans-medium flex-1 pr-3 text-base text-bg">
+            Removed from wishlist
+          </Text>
+          <Pressable onPress={() => void handleUndoRemove()} hitSlop={10}>
+            <Text className="font-sans-bold text-base text-bg">Undo</Text>
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }

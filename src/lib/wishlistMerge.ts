@@ -1,3 +1,4 @@
+import { normalizeWishlistImageSrc } from "@/lib/wishlistImageUrl";
 import type { WishlistGroup, WishlistItem, WishlistStore } from "@/types";
 
 export function toItem(row: {
@@ -10,7 +11,7 @@ export function toItem(row: {
   return {
     id: row.id,
     url: row.url,
-    imageSrc: row.image_src,
+    imageSrc: normalizeWishlistImageSrc(row.image_src),
     name: row.name,
     addedAt: row.added_at,
   };

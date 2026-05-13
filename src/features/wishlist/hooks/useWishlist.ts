@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   addGroup,
+  deleteWishlistItem,
   fetchWishlistStore,
   saveWishlistItem,
 } from "@/services/wishlistApi";
@@ -20,7 +21,16 @@ export function useWishlist() {
       const next = await fetchWishlistStore();
       setStore(next);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load wishlist");
+      const msg =
+        e instanceof Error
+          ? e.message
+          : typeof e === "object" &&
+              e !== null &&
+              "message" in e &&
+              typeof (e as { message: unknown }).message === "string"
+            ? (e as { message: string }).message
+            : "Failed to load wishlist";
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -49,5 +59,36 @@ export function useWishlist() {
     [refresh],
   );
 
-  return { store, loading, error, refresh, createGroup, saveItem };
+  const removeItem = useCallback(
+    async (id: string) => {
+      await deleteWishlistItem(id);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const restoreItem = useCallback(
+    async (params: {
+      groupId: string | null;
+      url: string;
+      imageSrc: string;
+      name: string | null;
+      addedAt: number;
+    }) => {
+      await saveWishlistItem(params);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  return {
+    store,
+    loading,
+    error,
+    refresh,
+    createGroup,
+    saveItem,
+    removeItem,
+    restoreItem,
+  };
 }
